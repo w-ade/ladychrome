@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASCII Record Player</title>
+<style>
+  :root { --bg: #000000; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #screen {
+    color: #f2f2f2;
+    font-family: "SFMono-Regular", Menlo, Monaco, "Courier New", monospace;
+    font-size: clamp(5px, calc(100vw / 66), 12px);
+    line-height: 1.0;
+    letter-spacing: 0;
+    white-space: pre;
+    user-select: none;
+    text-align: center;
+    will-change: contents;
+    text-shadow: 0 0 1px rgba(255,255,255,0.4), 0 0 5px rgba(200,210,255,0.15);
+  }
+  #screen .am {            /* warm accent: spinning spokes + marker */
+    color: #ffb84d;
+    text-shadow: 0 0 2px #ffb84d, 0 0 7px rgba(255,184,77,0.7);
+  }
+  #screen .dim { color: #6f6f78; text-shadow: none; }  /* body chrome, secondary */
+</style>
+</head>
+<body>
+  <pre id="screen"></pre>
+<script>
+(() => {
+  const screen = document.getElementById('screen');
+
+  const COLS = 104;
+  const ROWS = 52;
+
+  // measure real glyph aspect so the platter/record render perfectly round
+  function measureAspect() {
+    const probe = document.createElement('span');
+    probe.textContent = '#'.repeat(50);
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:inherit;line-height:1;';
+    screen.appendChild(probe);
+    const charW = probe.getBoundingClientRect().width / 50;
+    const charH = parseFloat(getComputedStyle(screen).fontSize);
+    screen.removeChild(probe);
+    return (charW && charH) ? charW / charH : 0.6;
+  }
+  let ASPECT = 0.6;
+
+  // ---- geometry (row units; horizontal corrected by ASPECT) ----
+  const pcx = COLS * 0.38, pcy = ROWS * 0.50;   // platter centre (left of middle)
+  const R_PLAT = ROWS * 0.42;                    // platter rim
+  const R_RECO = ROWS * 0.36;                    // vinyl outer
+  const R_LBL  = ROWS * 0.125;                   // label / vinyl inner
+  const LIGHT  = -2.3;                            // fixed reflection direction
+
+  const VRAMP = " .:-=+*#";
+
+  // buffers
+  let buf, acc;
+  function clear() { buf = new Array(COLS * ROWS).fill(' '); acc = new Array(COLS * ROWS).fill(0); }
+  function put(col, row, ch, a) {
+    col = Math.round(col); row = Math.round(row);
+    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return;
+    buf[row * COLS + col] = ch;
+    if (a) acc[row * COLS + col] = a;            // 1 = amber, 2 = dim
+  }
+  function text(col, row, str, a) { for (let i = 0; i < str.length; i++) put(col + i, row, str[i], a); }
+  // polar -> cell
+  function polar(r, ang) { return [pcx + (r * Math.cos(ang)) / ASPECT, pcy + r * Math.sin(ang)]; }
+  // line raster with slash glyphs
+  function line(x0, y0, x1, y1, a) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy, x = x0, y = y0;
+    const adx = x1 - x0, ady = y1 - y0;
+    let glyph = '-';
+    if (dy > dx * 2) glyph = '|';
+    else if (dx > dy * 2) glyph = '-';
+    else glyph = (adx > 0) === (ady > 0) ? '\\' : '/';
+    for (;;) {
+      put(x, y, glyph, a);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x += sx; }
+      if (e2 <  dx) { err += dx; y += sy; }
+    }
+  }
+
+  function frame(t) {
+    clear();
+    const spin = t * 0.0011;
+
+    // ---- platter + vinyl, per cell ----
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const ddx = (col - pcx) * ASPECT;
+        const ddy = row - pcy;
+        const r = Math.hypot(ddx, ddy);
+        if (r > R_PLAT + 0.6) continue;
+        const ang = Math.atan2(ddy, ddx);
+        const idx = row * COLS + col;
+
+        if (r < 0.9) { buf[idx] = 'o'; continue; }                 // spindle
+
+        if (r < R_LBL) {                                            // label (spins)
+          const al = ang - spin;
+          // 3 rotating spokes
+          let spoke = false;
+          for (let k = 0; k < 3; k++) {
+            let d = Math.abs(((al - k * 2.094 + Math.PI) % (2 * Math.PI)) - Math.PI);
+            if (d < 0.16 && r > R_LBL * 0.38) { spoke = true; break; }
+          }
+          if (r > R_LBL * 0.86) { buf[idx] = 'o'; acc[idx] = 1; }   // label rim (amber)
+          else if (spoke) { buf[idx] = '#'; acc[idx] = 1; }
+          else buf[idx] = (r > R_LBL * 0.5 ? ':' : '.');
+          continue;
+        }
+
+        if (r <= R_RECO) {                                          // vinyl grooves
+          const refl = Math.max(0, Math.cos(ang - LIGHT));
+          const sheen = Math.pow(refl, 2.4);                        // soft highlight sweep
+          const groove = 0.5 + 0.5 * Math.sin(r * 3.4);             // fine concentric rings
+          const shimmer = 0.04 * Math.sin((ang - spin) * 6 + r);    // faint life
+          // flat disc: rings carry brightness everywhere, sheen rides on top
+          let b = 0.17 + 0.33 * groove + 0.42 * sheen * (0.5 + 0.5 * groove) + shimmer;
+          b = Math.max(0, Math.min(1, b));
+          buf[idx] = VRAMP[Math.floor(b * (VRAMP.length - 1))];
+          continue;
+        }
+
+        // platter mat: dotted strobe ring at the rim, else bare
+        if (r > R_PLAT - 0.8) {
+          if ((Math.floor(ang * 28 / Math.PI) & 1) === 0) { buf[idx] = '.'; acc[idx] = 2; }
+        }
+      }
+    }
+
+    // orbiting marker stone on the vinyl
+    {
+      const rM = (R_LBL + R_RECO) * 0.52;
+      const [mx, my] = polar(rM, spin);
+      put(mx, my, '*', 1);
+    }
+
+    // ---- tonearm (static), S-shaped from back-right pivot to the record ----
+    const pivX = COLS * 0.80, pivY = ROWS * 0.22;
+    const [tx, ty] = polar(R_RECO * 0.95, 0.20);     // headshell rests on the right side
+    const elbX = (pivX + tx) / 2 + 3, elbY = (pivY + ty) / 2 - 2;   // bend
+    line(pivX, pivY, elbX, elbY, 0);
+    line(elbX, elbY, tx, ty, 0);
+    // pivot gimbal + counterweight (opposite the tip)
+    put(pivX, pivY, 'O', 0);
+    const ux = pivX - elbX, uy = pivY - elbY, ul = Math.hypot(ux, uy);
+    put(pivX + (ux / ul) * 2, pivY + (uy / ul) * 2, '#', 2);
+    put(pivX + (ux / ul) * 3, pivY + (uy / ul) * 2, '#', 2);
+    // headshell + cartridge stylus at the tip
+    put(tx, ty, '[', 0); put(tx + 1, ty, '#', 0);
+    put(tx, ty + 1, 'v', 1);
+
+    // ---- body frame ----
+    for (let c = 1; c < COLS - 1; c++) { put(c, 0, '-', 2); put(c, ROWS - 1, '-', 2); }
+    for (let r = 1; r < ROWS - 1; r++) { put(0, r, '|', 2); put(COLS - 1, r, '|', 2); }
+    put(0, 0, '+', 2); put(COLS - 1, 0, '+', 2); put(0, ROWS - 1, '+', 2); put(COLS - 1, ROWS - 1, '+', 2);
+
+    // ---- controls + labels ----
+    text(4, ROWS - 5, 'LADY CHROME', 1);
+    text(4, ROWS - 3, "33⅓   45", 2);
+    // pitch fader (right side)
+    text(COLS - 17, ROWS - 16, 'PITCH', 2);
+    for (let r = 0; r < 9; r++) put(COLS - 14, ROWS - 15 + r, '|', 2);
+    put(COLS - 15, ROWS - 11, '['); put(COLS - 14, ROWS - 11, '='); put(COLS - 13, ROWS - 11, ']');
+    // start / stop button
+    text(COLS - 12, ROWS - 4, 'START', 2);
+    put(COLS - 6, ROWS - 4, '('); put(COLS - 5, ROWS - 4, 'O', 1); put(COLS - 4, ROWS - 4, ')');
+
+    // ---- assemble ----
+    let out = '';
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const i = row * COLS + col;
+        const ch = buf[i] === '<' ? '&lt;' : buf[i];
+        if (acc[i] === 1)      out += '<span class="am">' + ch + '</span>';
+        else if (acc[i] === 2) out += '<span class="dim">' + ch + '</span>';
+        else                   out += ch;
+      }
+      out += '\n';
+    }
+    screen.innerHTML = out;
+    requestAnimationFrame(frame);
+  }
+
+  ASPECT = measureAspect();
+  window.addEventListener('resize', () => { ASPECT = measureAspect(); });
+  requestAnimationFrame(() => { ASPECT = measureAspect(); });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

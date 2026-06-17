@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rhinestone Disco Ball</title>
+<style>
+  :root { --bg: #000000; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  /* ambient halo behind the ball — soft chrome bloom that breathes */
+  body::before {
+    content: "";
+    position: absolute;
+    width: 70vmin;
+    height: 70vmin;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      rgba(180,200,255,0.22) 0%,
+      rgba(140,120,200,0.12) 38%,
+      rgba(0,0,0,0) 70%);
+    filter: blur(14px);
+    animation: halo 4.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes halo {
+    0%, 100% { opacity: 0.65; transform: scale(0.96); }
+    50%      { opacity: 1;    transform: scale(1.04); }
+  }
+  #screen {
+    position: relative;
+    font-family: "SFMono-Regular", Menlo, Monaco, "Courier New", monospace;
+    font-size: clamp(6px, calc(100vw / 56), 13px);
+    line-height: 1.0;
+    letter-spacing: 0;
+    white-space: pre;
+    user-select: none;
+    text-align: center;
+    will-change: contents, filter;
+    /* whole-ball bloom that breathes */
+    animation: breathe 4.5s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { filter: brightness(1)    drop-shadow(0 0 6px rgba(200,210,255,0.30)); }
+    50%      { filter: brightness(1.25) drop-shadow(0 0 16px rgba(200,210,255,0.55)); }
+  }
+  /* each rhinestone glows in its own hue (currentColor) — wider halo */
+  #screen .s {
+    text-shadow:
+      0 0 1px currentColor,
+      0 0 4px currentColor,
+      0 0 9px currentColor,
+      0 0 18px currentColor;
+  }
+  /* iridescent jewel palette */
+  .c0 { color:#ffffff; } /* clear   */
+  .c1 { color:#ff8fb1; } /* pink    */
+  .c2 { color:#7fe3a8; } /* mint    */
+  .c3 { color:#7fb6ff; } /* sky     */
+  .c4 { color:#c9a9ff; } /* lavender*/
+  .c5 { color:#f6a96b; } /* peach   */
+  .c6 { color:#ffd65c; } /* gold    */
+  .c7 { color:#6fe0d8; } /* aqua    */
+  /* big white sparkle bursts */
+  #screen .spk {
+    color:#ffffff;
+    text-shadow:
+      0 0 2px #fff, 0 0 6px #fff,
+      0 0 14px rgba(255,255,255,0.85),
+      0 0 26px rgba(255,255,255,0.5);
+  }
+</style>
+</head>
+<body>
+  <pre id="screen"></pre>
+<script>
+(() => {
+  const screen = document.getElementById('screen');
+
+  const COLS = 88;
+  const ROWS = 44;
+
+  // Measure the REAL glyph width/height for the current font + size, so the
+  // ball renders round on any device (Mac Safari, iOS, etc.) regardless of
+  // which monospace font the OS substitutes.
+  function measureAspect() {
+    const probe = document.createElement('span');
+    probe.textContent = STONE.repeat(50);
+    probe.style.cssText =
+      'position:absolute;visibility:hidden;white-space:pre;' +
+      'font:inherit;line-height:1;';
+    screen.appendChild(probe);
+    const charW = probe.getBoundingClientRect().width / 50;
+    const charH = parseFloat(getComputedStyle(screen).fontSize);
+    screen.removeChild(probe);
+    return (charW && charH) ? charW / charH : 0.6;
+  }
+  let CHAR_ASPECT = 0.6; // replaced by measureAspect() once the font is ready
+
+  const STONE = '•';
+  const STAR  = '✦';
+  const PALETTE = 8;
+
+  // Sphere as a regular lat/lon stud grid.
+  const LAT = 30;
+  const LON = 60;
+  const points = [];
+  for (let i = 0; i < LAT; i++) {
+    const theta = Math.PI * (i + 0.5) / LAT;
+    const sinT = Math.sin(theta), cosT = Math.cos(theta);
+    for (let j = 0; j < LON; j++) {
+      const phi = 2 * Math.PI * j / LON;
+      const id = i * LON + j;
+      points.push({
+        x: sinT * Math.cos(phi),
+        y: cosT,
+        z: sinT * Math.sin(phi),
+        ph: (id * 0.7) % (Math.PI * 2),
+        // stable scattered colour per stone
+        ci: (i * 13 + j * 7 + ((i * j) % 5)) % PALETTE,
+        seed: id % 47 === 0,
+      });
+    }
+  }
+
+  const R = Math.min(COLS * CHAR_ASPECT, ROWS) * 0.40;
+  const cx = COLS / 2;
+  const cy = ROWS / 2;
+
+  function frame(t) {
+    const ang = t * 0.00032;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const tilt = -0.30;
+    const ct = Math.cos(tilt), st = Math.sin(tilt);
+
+    // each cell: 0 empty, else {kind:'s'|'spk', ci}
+    const cells = new Array(COLS * ROWS).fill(null);
+    const zbuf  = new Array(COLS * ROWS).fill(-Infinity);
+
+    for (const p of points) {
+      let x = p.x * ca + p.z * sa;
+      let z = -p.x * sa + p.z * ca;
+      let y = p.y;
+      let y2 = y * ct - z * st;
+      let z2 = y * st + z * ct;
+      y = y2; z = z2;
+
+      const sx = Math.round(cx + x * R / CHAR_ASPECT);
+      const sy = Math.round(cy - y * R);
+      if (sx < 0 || sx >= COLS || sy < 0 || sy >= ROWS) continue;
+      const idx = sy * COLS + sx;
+      if (z <= zbuf[idx]) continue;
+      zbuf[idx] = z;
+
+      const twinkle = Math.sin(t * 0.004 + p.ph);
+      const star = p.seed && z > 0.2 && twinkle > 0.6;
+      cells[idx] = star ? { kind: 'spk' } : { kind: 's', ci: p.ci };
+    }
+
+    let out = '';
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const c = cells[row * COLS + col];
+        if (!c)                  out += ' ';
+        else if (c.kind === 'spk') out += '<span class="spk">' + STAR + '</span>';
+        else                     out += '<span class="s c' + c.ci + '">' + STONE + '</span>';
+      }
+      out += '\n';
+    }
+    screen.innerHTML = out;
+    requestAnimationFrame(frame);
+  }
+
+  CHAR_ASPECT = measureAspect();
+  // re-measure when the viewport (and thus font-size) changes
+  window.addEventListener('resize', () => { CHAR_ASPECT = measureAspect(); });
+  // fonts can settle a frame late on some devices — re-measure once more
+  requestAnimationFrame(() => { CHAR_ASPECT = measureAspect(); });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
